@@ -1,43 +1,68 @@
 import re
-import spacy
 
-def load_spacy_model():
-    """
-    Loads spaCy model. If missing on Streamlit Cloud,
-    automatically downloads and loads it.
-    """
-    try:
-        return spacy.load("en_core_web_sm")
-    except OSError:
-        # Download model at runtime (Streamlit Cloud)
-        from spacy.cli import download
-        download("en_core_web_sm")
-        return spacy.load("en_core_web_sm")
+# Simple regex-based NER for contracts (offline, cloud-safe)
+MONEY_PATTERNS = [
+    r'₹\s?\d[\d,]*(?:\.\d+)?',
+    r'INR\s?\d[\d,]*(?:\.\d+)?',
+    r'Rs\.?\s?\d[\d,]*(?:\.\d+)?'
+]
 
-nlp = load_spacy_model()
+DATE_PATTERNS = [
+    r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b',                   # 01/02/2026
+    r'\b\d{1,2}\s(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s\d{2,4}\b',  # 2 Feb 2026
+    r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s\d{1,2},\s\d{4}\b'
+]
 
-def extract_entities(text):
-    doc = nlp(text)
+PARTY_PATTERNS = [
+    r'This Agreement is between\s+(.*?)\s+and\s+(.*?)[\.,\n]',
+    r'By and between\s+(.*?)\s+and\s+(.*?)[\.,\n]',
+    r'Party A[:\-]\s*(.*?)[\n,]',
+    r'Party B[:\-]\s*(.*?)[\n,]'
+]
 
-    data = {
+def extract_entities(text: str):
+    entities = {
         "parties": [],
         "dates": [],
         "amounts": [],
         "jurisdiction": ""
     }
 
-    for ent in doc.ents:
-        if ent.label_ == "DATE":
-            data["dates"].append(ent.text)
-        if ent.label_ in ["ORG", "PERSON"]:
-            data["parties"].append(ent.text)
+    # Amounts
+    amounts = []
+    for p in MONEY_PATTERNS:
+        amounts.extend(re.findall(p, text, flags=re.IGNORECASE))
+    entities["amounts"] = list(dict.fromkeys(amounts))  # unique keep order
 
-    data["amounts"] = re.findall(r'(₹\s?\d[\d,]*)|(INR\s?\d[\d,]*)|(Rs\.?\s?\d[\d,]*)', text)
-    data["amounts"] = [a[0] or a[1] or a[2] for a in data["amounts"] if any(a)]
+    # Dates
+    dates = []
+    for p in DATE_PATTERNS:
+        dates.extend(re.findall(p, text, flags=re.IGNORECASE))
+    entities["dates"] = list(dict.fromkeys(dates))
 
-    # Basic jurisdiction detection
+    # Parties
+    parties = []
+    for p in PARTY_PATTERNS:
+        matches = re.findall(p, text, flags=re.IGNORECASE)
+        for m in matches:
+            if isinstance(m, tuple):
+                parties.extend([x.strip() for x in m if x.strip()])
+            else:
+                parties.append(m.strip())
+    # Clean party strings
+    parties = [re.sub(r'\s+', ' ', x) for x in parties]
+    entities["parties"] = list(dict.fromkeys(parties))
+
+    # Jurisdiction (simple)
     low = text.lower()
-    if "jurisdiction" in low or "court" in low or "governing law" in low:
-        data["jurisdiction"] = text[:300]
+    if "jurisdiction" in low or "courts at" in low or "governing law" in low:
+        # grab a short relevant snippet
+        idx = low.find("jurisdiction")
+        if idx == -1:
+            idx = low.find("governing law")
+        if idx == -1:
+            idx = low.find("courts at")
+        if idx != -1:
+            entities["jurisdiction"] = text[max(0, idx-50): idx+250].strip()
 
-    return data
+    return entities

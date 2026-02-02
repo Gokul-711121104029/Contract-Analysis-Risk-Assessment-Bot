@@ -1,7 +1,6 @@
 streamlit
 pdfplumber
 python-docx
-spacy
 langdetect
 python-dotenv
 reportlab
